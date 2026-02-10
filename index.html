@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MiniTok Local - Persistente</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:system-ui,sans-serif; background:#000; color:#fff; height:100vh; overflow:hidden; }
+    #app { height:100vh; display:flex; flex-direction:column; }
+
+    header {
+      position:fixed; top:0; left:0; right:0; height:54px;
+      background:rgba(0,0,0,0.75); backdrop-filter:blur(10px); z-index:200;
+      display:flex; align-items:center; justify-content:space-between; padding:0 16px; font-weight:bold;
+    }
+    .btn-icon { background:none; border:none; color:#fff; font-size:1.5rem; cursor:pointer; }
+
+    #feed { flex:1; overflow-y:scroll; scroll-snap-type:y mandatory; padding:54px 0 90px; }
+    .video-container { height:100vh; scroll-snap-align:start; position:relative; background:#111; }
+    .video-wrapper { height:100%; background:#000; display:flex; align-items:center; justify-content:center; }
+    video { max-width:100%; max-height:100%; object-fit:contain; }
+
+    .actions {
+      position:absolute; right:16px; bottom:160px;
+      display:flex; flex-direction:column; align-items:center; gap:24px; z-index:10;
+    }
+    .action-btn {
+      background:rgba(255,255,255,0.18); border:none; border-radius:50%;
+      width:60px; height:60px; font-size:28px; color:#fff; cursor:pointer;
+      backdrop-filter:blur(6px); transition:0.18s;
+    }
+    .action-btn:active { transform:scale(0.92); }
+    .like-btn.liked { color:#fe2c55; background:rgba(254,44,85,0.3); }
+    .action-count { font-size:13px; margin-top:4px; text-shadow:0 1px 4px #000; }
+
+    .comments {
+      position:absolute; bottom:100px; left:0; right:0; max-height:30%;
+      overflow-y:auto; padding:16px; background:linear-gradient(to top,rgba(0,0,0,0.92),transparent);
+      font-size:15px;
+    }
+    .comment { margin:10px 0; padding:10px 16px; background:rgba(255,255,255,0.12); border-radius:20px; max-width:80%; }
+
+    #bottom-bar {
+      position:fixed; bottom:0; left:0; right:0; height:80px;
+      background:rgba(0,0,0,0.8); backdrop-filter:blur(12px); border-top:1px solid #333;
+      display:flex; align-items:center; padding:0 16px; gap:12px; z-index:100;
+    }
+    #upload-btn {
+      background:#fe2c55; color:#fff; border:none; border-radius:50%;
+      width:56px; height:56px; font-size:32px; cursor:pointer;
+    }
+    #comment-input {
+      flex:1; background:rgba(255,255,255,0.14); border:none; border-radius:999px;
+      padding:14px 20px; color:#fff; font-size:16px;
+    }
+    #comment-input::placeholder { color:rgba(255,255,255,0.6); }
+
+    .modal {
+      position:fixed; inset:0; background:rgba(0,0,0,0.92);
+      display:none; align-items:center; justify-content:center; z-index:300; padding:20px;
+    }
+    .modal-content {
+      background:#111; border-radius:16px; width:100%; max-width:440px;
+      max-height:90vh; overflow-y:auto; padding:24px;
+    }
+    .close { float:right; font-size:32px; cursor:pointer; }
+    #profile-videos { margin-top:20px; }
+    .profile-video-thumb {
+      width:100%; height:180px; background:#222; border-radius:8px; margin:8px 0;
+      display:flex; align-items:center; justify-content:center; font-size:14px; color:#aaa;
+    }
+
+    @media (min-width:500px) { #feed { max-width:480px; margin:0 auto; } }
+  </style>
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <button class="btn-icon" id="users-btn">👥</button>
+    <div>MiniTok Persistente</div>
+    <button class="btn-icon" id="profile-btn">👤</button>
+  </header>
+
+  <div id="feed"></div>
+
+  <div id="bottom-bar">
+    <input type="file" id="videoInput" accept="video/*" style="display:none"/>
+    <button id="upload-btn">+</button>
+    <input type="text" id="comment-input" placeholder="Comente no vídeo atual... (Enter)"/>
+  </div>
+
+  <!-- Modais -->
+  <div id="profile-modal" class="modal">
+    <div class="modal-content">
+      <span class="close">×</span>
+      <h2>Perfil: <span id="profile-name"></span></h2>
+      <p>Vídeos postados: <strong id="profile-vcount">0</strong></p>
+      <p>Likes recebidos: <strong id="profile-likes">0</strong></p>
+      <div id="profile-videos"></div>
+    </div>
+  </div>
+
+  <div id="users-modal" class="modal">
+    <div class="modal-content">
+      <span class="close">×</span>
+      <h2>Trocar / Criar Usuário</h2>
+      <div id="users-list" style="margin:16px 0;"></div>
+      <input type="text" id="new-username" placeholder="Nome do novo usuário..." style="width:100%; padding:12px; background:#222; border:none; border-radius:8px; color:#fff;"/>
+      <button id="create-user" style="margin-top:12px; width:100%; padding:14px; background:#fe2c55; border:none; border-radius:8px; color:#fff; font-weight:bold;">Criar usuário</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+// IndexedDB Setup - Agora armazena ArrayBuffer dos vídeos!
+// ──────────────────────────────────────────────
+
+const DB_NAME = "MiniTokPersistent";
+const DB_VER = 2; // aumentei versão para adicionar blobs
+let db;
+
+async function initDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+
+    req.onupgradeneeded = e => {
+      db = e.target.result;
+      if (!db.objectStoreNames.contains("videos")) {
+        db.createObjectStore("videos", { keyPath: "id", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains("users")) {
+        db.createObjectStore("users", { keyPath: "username" });
+      }
+    };
+
+    req.onsuccess = e => { db = e.target.result; resolve(); };
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+async function tx(storeName, mode = "readonly") {
+  const t = db.transaction(storeName, mode);
+  return t.objectStore(storeName);
+}
+
+// ──────────────────────────────────────────────
+// Estado
+// ──────────────────────────────────────────────
+
+let currentUser = "Você";
+let currentVideoEl = null;
+const feed = document.getElementById("feed");
+
+// ──────────────────────────────────────────────
+// Carregar e renderizar
+// ──────────────────────────────────────────────
+
+async function loadAndRender() {
+  feed.innerHTML = "";
+
+  const videosStore = await tx("videos");
+  const videosReq = videosStore.getAll();
+  
+  videosReq.onsuccess = () => {
+    const videos = videosReq.result.filter(v => v.user === currentUser || true); // por enquanto mostra todos
+
+    if (videos.length === 0) {
+      feed.innerHTML = `<div style="height:100vh;display:flex;align-items:center;justify-content:center;color:#555;text-align:center;">
+        <div><h2>Sem vídeos</h2><p>Use o botão + para postar</p></div>
+      </div>`;
+      return;
+    }
+
+    videos.forEach(video => {
+      const container = document.createElement("div");
+      container.className = "video-container";
+      container.dataset.id = video.id;
+
+      const blob = new Blob([video.data], { type: "video/mp4" });
+      const url = URL.createObjectURL(blob);
+
+      const isLiked = (video.likes || []).includes(currentUser);
+
+      container.innerHTML = `
+        <div class="video-wrapper">
+          <video controls playsinline loop preload="metadata" src="${url}"></video>
+        </div>
+
+        <div class="actions">
+          <div style="text-align:center">
+            <button class="action-btn like-btn ${isLiked?'liked':''}" data-id="${video.id}">❤️</button>
+            <div class="action-count">${(video.likes||[]).length}</div>
+          </div>
+          <div style="text-align:center">
+            <button class="action-btn">💬</button>
+            <div class="action-count">${(video.comments||[]).length}</div>
+          </div>
+          <div style="text-align:center">
+            <button class="action-btn share-btn" data-id="${video.id}">↗️</button>
+            <div class="action-count">Share</div>
+          </div>
+        </div>
+
+        <div class="comments"></div>
+      `;
+
+      const commentsArea = container.querySelector(".comments");
+      (video.comments || []).forEach(c => {
+        const div = document.createElement("div");
+        div.className = "comment";
+        div.innerHTML = `<strong>${c.user}:</strong> ${c.text}`;
+        commentsArea.appendChild(div);
+      });
+
+      // Play/pause ao entrar na tela
+      new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          const vid = container.querySelector("video");
+          if (entry.isIntersecting) {
+            currentVideoEl = vid;
+            vid.play().catch(() => {});
+          } else {
+            vid.pause();
+          }
+        });
+      }, { threshold: 0.7 }).observe(container);
+
+      // Like toggle
+      container.querySelector(".like-btn").onclick = async () => {
+        const store = await tx("videos", "readwrite");
+        const v = await store.get(video.id);
+        if (!v.likes) v.likes = [];
+        const idx = v.likes.indexOf(currentUser);
+        if (idx === -1) v.likes.push(currentUser);
+        else v.likes.splice(idx, 1);
+        await store.put(v);
+        loadAndRender(); // recarrega (simples, mas ok para demo)
+      };
+
+      // Compartilhar simulado
+      container.querySelector(".share-btn").onclick = () => {
+        const link = `minitok://video?id=${video.id}`;
+        navigator.clipboard.writeText(link).then(() => {
+          alert("Link copiado (simulado):\n" + link);
+        });
+      };
+
+      feed.appendChild(container);
+    });
+  };
+}
+
+// ──────────────────────────────────────────────
+// Upload vídeo → salva ArrayBuffer
+// ──────────────────────────────────────────────
+
+document.getElementById("upload-btn").onclick = () => {
+  document.getElementById("videoInput").click();
+};
+
+document.getElementById("videoInput").onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const arrayBuffer = await file.arrayBuffer();
+
+  const videoData = {
+    data: arrayBuffer,
+    type: file.type,
+    name: file.name,
+    size: file.size,
+    user: currentUser,
+    uploadDate: new Date().toISOString(),
+    likes: [],
+    comments: []
+  };
+
+  const store = await tx("videos", "readwrite");
+  await store.add(videoData);
+
+  loadAndRender();
+  feed.scrollTo({ top: feed.scrollHeight, behavior: "smooth" });
+};
+
+// ──────────────────────────────────────────────
+// Comentário
+// ──────────────────────────────────────────────
+
+document.getElementById("comment-input").onkeypress = async e => {
+  if (e.key !== "Enter" || !e.target.value.trim()) return;
+
+  if (!currentVideoEl) return alert("Nenhum vídeo visível");
+
+  const container = currentVideoEl.closest(".video-container");
+  const id = Number(container.dataset.id);
+  const text = e.target.value.trim();
+
+  const store = await tx("videos", "readwrite");
+  const video = await store.get(id);
+
+  if (!video.comments) video.comments = [];
+  video.comments.push({ user: currentUser, text });
+
+  await store.put(video);
+  e.target.value = "";
+  loadAndRender();
+};
+
+// ──────────────────────────────────────────────
+// Usuários e Perfil
+// ──────────────────────────────────────────────
+
+async function loadUsers() {
+  const store = await tx("users");
+  const req = store.getAll();
+
+  req.onsuccess = () => {
+    const users = req.result;
+    const list = document.getElementById("users-list");
+    list.innerHTML = "";
+    users.forEach(u => {
+      const div = document.createElement("div");
+      div.textContent = u.username + (u.username === currentUser ? " (ativo)" : "");
+      div.style.padding = "12px";
+      div.style.background = u.username === currentUser ? "#fe2c55" : "rgba(255,255,255,0.1)";
+      div.style.borderRadius = "10px";
+      div.style.margin = "6px 0";
+      div.style.cursor = "pointer";
+      div.onclick = () => {
+        currentUser = u.username;
+        loadAndRender();
+        document.getElementById("users-modal").style.display = "none";
+      };
+      list.appendChild(div);
+    });
+  };
+}
+
+document.getElementById("create-user").onclick = async () => {
+  const name = document.getElementById("new-username").value.trim();
+  if (!name) return;
+  const store = await tx("users", "readwrite");
+  try {
+    await store.add({ username: name });
+    loadUsers();
+    document.getElementById("new-username").value = "";
+  } catch (err) {
+    alert("Usuário já existe!");
+  }
+};
+
+document.getElementById("profile-btn").onclick = async () => {
+  document.getElementById("profile-name").textContent = currentUser;
+
+  const videosStore = await tx("videos");
+  const all = await videosStore.getAll();
+  const myVideos = all.filter(v => v.user === currentUser);
+
+  document.getElementById("profile-vcount").textContent = myVideos.length;
+  document.getElementById("profile-likes").textContent = myVideos.reduce((s, v) => s + (v.likes?.length || 0), 0);
+
+  const thumbs = document.getElementById("profile-videos");
+  thumbs.innerHTML = "";
+  myVideos.forEach(v => {
+    const div = document.createElement("div");
+    div.className = "profile-video-thumb";
+    div.textContent = `Vídeo: ${v.name || "sem nome"} (${(v.size/1024/1024).toFixed(1)} MB)`;
+    thumbs.appendChild(div);
+  });
+
+  document.getElementById("profile-modal").style.display = "flex";
+};
+
+// Modais close
+document.querySelectorAll(".close").forEach(el => {
+  el.onclick = () => el.closest(".modal").style.display = "none";
+});
+document.querySelectorAll(".modal").forEach(m => {
+  m.onclick = e => { if (e.target === m) m.style.display = "none"; };
+});
+
+// Início
+(async () => {
+  await initDB();
+  await loadUsers();
+  await loadAndRender();
+})();
+</script>
+</body>
+</html>
