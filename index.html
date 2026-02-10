@@ -229,29 +229,37 @@ async function loadAndRender() {
       }, { threshold: 0.7 }).observe(container);
 
       // Like toggle
-      container.querySelector(".like-btn").onclick = async () => {
-        const store = await tx("videos", "readwrite");
-        const v = await store.get(video.id);
-        if (!v.likes) v.likes = [];
-        const idx = v.likes.indexOf(currentUser);
-        if (idx === -1) v.likes.push(currentUser);
-        else v.likes.splice(idx, 1);
-        await store.put(v);
-        loadAndRender(); // recarrega (simples, mas ok para demo)
-      };
+      function setupLike(container, video, currentUser) {
+  const likeBtn = container.querySelector(".like-btn");
+  if (!likeBtn) return;
 
-      // Compartilhar simulado
-      container.querySelector(".share-btn").onclick = () => {
-        const link = `minitok://video?id=${video.id}`;
-        navigator.clipboard.writeText(link).then(() => {
-          alert("Link copiado (simulado):\n" + link);
-        });
-      };
+  likeBtn.onclick = async () => {
+    const store = tx("videos", "readwrite").objectStore("videos");
+    const v = await store.get(video.id);
 
-      feed.appendChild(container);
-    });
+    if (!v.likes) v.likes = [];
+    const idx = v.likes.indexOf(currentUser);
+
+    idx === -1
+      ? v.likes.push(currentUser)
+      : v.likes.splice(idx, 1);
+
+    await store.put(v);
+    loadAndRender();
   };
 }
+
+function setupShare(container, video) {
+  const shareBtn = container.querySelector(".share-btn");
+  if (!shareBtn) return;
+
+  shareBtn.onclick = () => {
+    const link = `minitok://video?id=${video.id}`;
+    navigator.clipboard.writeText(link);
+    alert("Link copiado (simulado):\n" + link);
+  };
+}
+
 
 // ──────────────────────────────────────────────
 // Upload vídeo → salva ArrayBuffer
